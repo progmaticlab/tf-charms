@@ -255,30 +255,6 @@ def update_charm_status():
         return
     _run_services(ctx)
 
-    if is_reboot_required():
-        status_set('blocked',
-                   'Reboot is required due to hugepages allocation.')
-        return
-    common_utils.update_services_status(MODULE, SERVICES)
-
-
-def update_charm_status_for_upgrade():
-    ctx = get_context()
-    _run_services(ctx)
-
-    if config.get('maintenance') == 'ziu':
-        # update_ziu("action-upgrade") raises exceptions from relation_set
-        # cause may not be ready. therefore save status and apply it
-        # either when network will be up or after reboot
-        config["upgraded"] = True
-        config.save()
-
-    if is_reboot_required():
-        status_set('blocked',
-                   'Reboot is required due to hugepages allocation.')
-        return
-    common_utils.update_services_status(MODULE, SERVICES)
-
 
 def _check_readyness(ctx):
     missing_relations = []
@@ -330,6 +306,12 @@ def _run_services(ctx):
     changed |= common_utils.render_and_log("vrouter.yaml", CONFIGS_PATH + "/docker-compose.yaml", ctx)
     docker_utils.compose_run(CONFIGS_PATH + "/docker-compose.yaml", changed)
 
+    if is_reboot_required():
+        status_set('blocked',
+                   'Reboot is required due to hugepages allocation.')
+        return
+    common_utils.update_services_status(MODULE, SERVICES)
+
 
 def stop_agent():
     path = CONFIGS_PATH + "/docker-compose.yaml"
@@ -350,6 +332,18 @@ def stop_agent():
             os.remove(path)
         except Exception:
             pass
+
+
+def action_upgrade():
+    mode = config.get("maintenance")
+    if not mode:
+        return
+
+    stop_agent()
+    if mode == 'issu':
+        _run_services(get_context())
+    elif mode == 'ziu':
+        update_ziu("upgrade")
 
 
 def fix_dns_settings():
@@ -622,14 +616,15 @@ def ziu_stage_noop(ziu_stage, trigger):
 
 def ziu_stage_0(ziu_stage, trigger):
     # update images
-    config_set("upgraded", None)
     if trigger == "image-tag":
         signal_ziu("ziu_done", ziu_stage)
 
 
 def ziu_stage_5(ziu_stage, trigger):
     # wait for upgrade action and then signal
-    if config.get("upgraded"):
+    if trigger == 'upgrade':
+        ctx = get_context()
+        _run_services(ctx)
         signal_ziu("ziu_done", ziu_stage)
 
 
@@ -637,7 +632,6 @@ def ziu_stage_6(ziu_stage, trigger):
     # finish
     signal_ziu("ziu", None)
     signal_ziu("ziu_done", None)
-    config_set("upgraded", None)
 
 
 stages = {
